@@ -416,10 +416,12 @@
       range: [0, 3],
       tickStep: 0.25,
       questions: 6,
-      tolerance: 0.034,
+      tolerance: 0.01,
       timeLimit: 0,
       moving: false,
       cameraFocus: false,
+      dynamicTickFromQuestion: true,
+      exactOnly: true,
       generator: makeLevel4Question,
     },
     {
@@ -478,7 +480,7 @@
     elapsedInLevel: 0,
     timeLeft: 0,
     lineShift: 0,
-    feedback: "Kampanyayı başlat ve gezegenlere kesir yolu çiz.",
+    feedback: "Oyunu başlat ve gezegenlere kesir yolu çiz.",
     feedbackType: "info",
     feedbackT: 0,
     particles: [],
@@ -643,7 +645,7 @@
     }
 
     if (state.mode === "game_complete") {
-      ui.hint.textContent = `Harika. Kampanya bitti. Toplam skor: ${state.score}. Tekrar başlatabilirsin.`;
+      ui.hint.textContent = `Harika. Oyun bitti. Toplam skor: ${state.score}. Tekrar başlatabilirsin.`;
       return;
     }
 
@@ -664,7 +666,7 @@
     ui.nextBtn.hidden = !(state.mode === "level_clear" || state.mode === "game_complete");
     ui.resetBtn.hidden = state.mode === "menu";
 
-    ui.startBtn.textContent = state.hasPlayed ? "Yeniden Başlat" : "Kampanyayı Başlat";
+    ui.startBtn.textContent = state.hasPlayed ? "Baştan Başlat" : "Oyunu Başlat";
     ui.nextBtn.textContent = state.mode === "game_complete" ? "Baştan Oyna" : "Sonraki Seviye";
 
     if (state.mode !== "menu") {
@@ -893,7 +895,7 @@
     }
 
     const span = state.level.range[1] - state.level.range[0];
-    const tolerance = span * state.level.tolerance;
+    const tolerance = state.level.exactOnly ? 0.0008 : span * state.level.tolerance;
     const error = Math.abs(state.markerValue - question.value);
     const correct = error <= tolerance;
 
@@ -929,7 +931,7 @@
           beginLevel(0);
           return;
         }
-        setFeedback("Canlar bitti. Kampanyayı yeniden başlat.", "error", 2.8);
+        setFeedback("Canlar bitti. Oyunu yeniden başlat.", "error", 2.8);
         state.mode = "menu";
         updateUI();
         return;
@@ -1601,6 +1603,7 @@
     const targetCY = targetY + targetH * 0.5;
     const targetLabel = q ? q.label : "-";
     const targetValue = q ? formatCompactDecimal(q.value) : "-";
+    const isExactLevel = Boolean(state.level && state.level.exactOnly);
     const titleText = `Seviye ${state.levelIndex + 1}: ${state.level ? state.level.name : "-"}`;
     const titleX = cardX + 24;
     const titleY = cardY + clamp(cardH * 0.34, 34, 48);
@@ -1673,7 +1676,7 @@
     ctx.fillStyle = "rgba(26, 54, 66, 0.86)";
     ctx.textAlign = "right";
     ctx.font = "600 15px 'Noto Sans', 'Outfit', sans-serif";
-    ctx.fillText(`≈ ${targetValue}`, targetX + targetW - 14, targetY + 19);
+    ctx.fillText(`${isExactLevel ? "=" : "≈"} ${targetValue}`, targetX + targetW - 14, targetY + 19);
     ctx.restore();
 
     ctx.textAlign = "right";
@@ -2159,7 +2162,7 @@
 
       ctx.fillStyle = "rgba(24, 66, 85, 0.76)";
       ctx.font = "600 17px 'Noto Sans', 'Outfit', sans-serif";
-      ctx.fillText("Enter: Kampanya | C: Kamera | 0: Menü | F: Tam ekran", panelX + panelW * 0.5, footerSecondaryY + 5);
+      ctx.fillText("Enter: Başlat | C: Kamera | 0: Menü | F: Tam ekran", panelX + panelW * 0.5, footerSecondaryY + 5);
       return;
     }
 

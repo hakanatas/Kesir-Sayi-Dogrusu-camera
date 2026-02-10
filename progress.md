@@ -158,3 +158,13 @@ TODO / Sonraki ajan notlari:
 - Doğrulama:
   - `output/auto-loop-start-check/shot-0.png` + `state-0.json` (otomatik başlangıç + toplam sayaç görünümü)
   - `output/auto-variant-final-check/shot-0.png` + `state-0.json`
+
+- İleri sürüm geri bildirimi düzeltmesi:
+  - `Bileşik Laboratuvar` için yaklaşık kabul kapatıldı:
+    - `exactOnly: true`
+    - `dynamicTickFromQuestion: true`
+    - değerlendirme toleransı bu seviyede çok sıkılaştırıldı.
+    - üst kartta ondalık değerde `≈` yerine `=` gösterimi eklendi (exact seviyelerde).
+  - Menü ve buton Türkçesi sadeleştirildi:
+    - `Kampanyayı Başlat` -> `Oyunu Başlat`
+    - menü alt satırı `Enter: Başlat` olarak güncellendi.
