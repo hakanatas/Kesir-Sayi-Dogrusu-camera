@@ -217,7 +217,13 @@
   function makeLevel2MixedQuestion() {
     const den = pick([2, 3, 4, 5, 6, 8]);
     const whole = randInt(1, 2);
-    const num = randInt(1, den - 1);
+    let num = randInt(1, den - 1);
+    let guard = 0;
+    // Denk kesir görünümünü engellemek için pay/payda aralarında asal seç.
+    while (gcd(num, den) !== 1 && guard < 24) {
+      num = randInt(1, den - 1);
+      guard += 1;
+    }
     return {
       value: whole + num / den,
       label: `${whole} ${num}/${den}`,
