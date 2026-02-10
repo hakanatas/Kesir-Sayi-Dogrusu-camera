@@ -42,3 +42,11 @@ TODO / Sonraki ajan notlari:
   - Hareket + cilt pikseli birleşik (skin-motion) takip algoritması eklendi.
   - Üstteki hareketli cilt bölgesinden işaret noktası çıkarımı yapılıyor.
   - Takip güven skoru (`trackingConfidence`) ve daha dengeli dwell tetikleme eklendi.
+- Menüde yazı kayması ikinci turda düzeltildi:
+  - Panel yüksekliği/konumu dinamik hale getirildi.
+  - Seviye listesi satır aralığı panel yüksekliğine göre hesaplanıyor.
+  - Alt bilgi metni ve üst açıklama satır sarma ile çiziliyor.
+- Kamera kontrolü iyileştirme turu:
+  - MediaPipe Hands tabanlı AI takip entegrasyonu eklendi (yüklenirse otomatik devreye girer).
+  - AI yüklenemezse geliştirilmiş skin-motion fallback çalışır.
+  - Takip türü etiketi (`AI/basic`) ve güven göstergesi korundu.

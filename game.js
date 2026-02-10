@@ -353,6 +353,17 @@
       sampleAccumulator: 0,
       lastMotion: 0,
       trackingConfidence: 0,
+      tracker: "basic",
+      ml: {
+        loading: false,
+        loaded: false,
+        loadPromise: null,
+        hands: null,
+        busy: false,
+        lastSeen: 0,
+        lastInference: 0,
+        errorText: "",
+      },
       errorText: "",
     },
     hudShakeT: 0,
@@ -750,7 +761,11 @@
       state.camera.sampleAccumulator = 0;
       state.camera.lastMotion = 0;
       state.camera.trackingConfidence = 0;
+      state.camera.tracker = "basic";
+      state.camera.ml.lastSeen = 0;
+      state.camera.ml.lastInference = 0;
       state.camera.errorText = "";
+      void ensureMlTracker();
       updateCameraButtonText();
       return true;
     } catch (error) {
@@ -772,6 +787,7 @@
     state.camera.baselineReady = false;
     state.camera.lastMotion = 0;
     state.camera.trackingConfidence = 0;
+    state.camera.tracker = "basic";
     updateCameraButtonText();
   }
 
@@ -792,6 +808,136 @@
     state.inputMode = "camera";
     setFeedback("Kamera imleci aktif. Parmağını hareket ettir, sabit tutunca kilitler.", "info", 2.4);
     updateUI();
+  }
+
+  function loadScriptOnce(src) {
+    return new Promise((resolve, reject) => {
+      for (const script of document.scripts) {
+        if (script.src === src) {
+          if (script.dataset.loaded === "1") {
+            resolve();
+            return;
+          }
+          script.addEventListener("load", () => resolve(), { once: true });
+          script.addEventListener("error", () => reject(new Error(`Script yüklenemedi: ${src}`)), { once: true });
+          return;
+        }
+      }
+
+      const script = document.createElement("script");
+      script.src = src;
+      script.async = true;
+      script.crossOrigin = "anonymous";
+      script.addEventListener(
+        "load",
+        () => {
+          script.dataset.loaded = "1";
+          resolve();
+        },
+        { once: true }
+      );
+      script.addEventListener("error", () => reject(new Error(`Script yüklenemedi: ${src}`)), { once: true });
+      document.head.appendChild(script);
+    });
+  }
+
+  async function ensureMlTracker() {
+    const ml = state.camera.ml;
+    if (ml.loaded && ml.hands) {
+      return true;
+    }
+    if (ml.loading && ml.loadPromise) {
+      return ml.loadPromise;
+    }
+
+    ml.loading = true;
+    ml.loadPromise = (async () => {
+      try {
+        await loadScriptOnce("https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js");
+        if (!window.Hands) {
+          throw new Error("MediaPipe Hands API bulunamadı.");
+        }
+
+        const hands = new window.Hands({
+          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+        });
+        hands.setOptions({
+          maxNumHands: 1,
+          modelComplexity: 1,
+          minDetectionConfidence: 0.62,
+          minTrackingConfidence: 0.55,
+        });
+        hands.onResults((results) => {
+          const handsFound = results && Array.isArray(results.multiHandLandmarks) ? results.multiHandLandmarks : [];
+          if (!handsFound.length) {
+            const unseenFor = performance.now() - ml.lastSeen;
+            if (unseenFor > 180) {
+              state.camera.trackingConfidence = Math.max(0, state.camera.trackingConfidence - 0.08);
+              state.camera.lastMotion = Math.max(0, state.camera.lastMotion * 0.86);
+            }
+            return;
+          }
+
+          const landmarks = handsFound[0];
+          const tip = landmarks[8];
+          const pip = landmarks[6];
+          const tipX = clamp(tip.x, 0, 1);
+          const tipY = clamp(tip.y, 0, 1);
+          const depthWeight = clamp(0.3 + Math.abs((pip ? pip.y : tipY) - tipY) * 2.4, 0.3, 1);
+
+          state.camera.pointerX = lerp(state.camera.pointerX, tipX, 0.46);
+          state.camera.pointerY = lerp(state.camera.pointerY, tipY, 0.42);
+          state.camera.trackingConfidence = clamp(0.74 + depthWeight * 0.22, 0, 1);
+          state.camera.lastMotion = 30000 * state.camera.trackingConfidence;
+          ml.lastSeen = performance.now();
+        });
+
+        ml.hands = hands;
+        ml.loaded = true;
+        ml.errorText = "";
+        state.camera.tracker = "ai";
+        setFeedback("Kamera AI takibi aktif.", "success", 1.8);
+        return true;
+      } catch (error) {
+        ml.errorText = error instanceof Error ? error.message : String(error);
+        ml.loaded = false;
+        ml.hands = null;
+        state.camera.tracker = "basic";
+        return false;
+      } finally {
+        ml.loading = false;
+      }
+    })();
+
+    return ml.loadPromise;
+  }
+
+  function applyCameraPointerControl(sampleStepSeconds) {
+    if (state.mode === "playing" && state.level && state.inputMode === "camera") {
+      const line = getLineGeometry();
+      const mirroredX = 1 - state.camera.pointerX;
+      const canvasX = line.x + mirroredX * line.width;
+      setMarkerFromCanvasX(canvasX);
+
+      const deltaX = Math.abs(state.camera.pointerX - state.camera.lastStableX);
+      const stableThreshold = state.camera.trackingConfidence > 0.7 ? 0.008 : 0.006;
+      if (deltaX < stableThreshold) {
+        state.camera.dwell += sampleStepSeconds;
+      } else {
+        state.camera.dwell = Math.max(0, state.camera.dwell - sampleStepSeconds);
+        state.camera.lastStableX = state.camera.pointerX;
+      }
+
+      state.camera.submitCooldown = Math.max(0, state.camera.submitCooldown - sampleStepSeconds);
+      if (state.camera.dwell > 0.95 && state.camera.submitCooldown <= 0 && state.camera.trackingConfidence > 0.35) {
+        submitGuess("camera-dwell");
+        state.camera.dwell = 0;
+        state.camera.submitCooldown = 1.3;
+      }
+    } else {
+      state.camera.dwell = Math.max(0, state.camera.dwell - sampleStepSeconds);
+      state.camera.submitCooldown = Math.max(0, state.camera.submitCooldown - sampleStepSeconds);
+    }
   }
 
   function isSkinPixel(r, g, b) {
@@ -817,7 +963,28 @@
     if (state.camera.sampleAccumulator < 0.05) {
       return;
     }
+    const sampleStepSeconds = state.camera.sampleAccumulator;
     state.camera.sampleAccumulator = 0;
+
+    const ml = state.camera.ml;
+    if (ml.loaded && ml.hands) {
+      if (!ml.busy && performance.now() - ml.lastInference >= 34) {
+        ml.busy = true;
+        ml.lastInference = performance.now();
+        ml.hands
+          .send({ image: cameraVideo })
+          .catch(() => {
+            state.camera.tracker = "basic";
+          })
+          .finally(() => {
+            ml.busy = false;
+          });
+      }
+      applyCameraPointerControl(sampleStepSeconds);
+      return;
+    }
+
+    state.camera.tracker = "basic";
 
     cameraSampleCtx.drawImage(cameraVideo, 0, 0, CAM_W, CAM_H);
     const pixels = cameraSampleCtx.getImageData(0, 0, CAM_W, CAM_H).data;
@@ -839,7 +1006,6 @@
     let topY = CAM_H + 1;
     let topXSum = 0;
     let topCount = 0;
-    const previousPointerX = state.camera.pointerX;
 
     for (let i = 0; i < CAM_W * CAM_H; i += 1) {
       const p = i * 4;
@@ -926,31 +1092,7 @@
       state.camera.trackingConfidence = Math.max(0, state.camera.trackingConfidence * 0.85);
     }
 
-    if (state.mode === "playing" && state.level && state.inputMode === "camera") {
-      const line = getLineGeometry();
-      const mirroredX = 1 - state.camera.pointerX;
-      const canvasX = line.x + mirroredX * line.width;
-      setMarkerFromCanvasX(canvasX);
-
-      const deltaX = Math.abs(state.camera.pointerX - previousPointerX);
-      const stableThreshold = state.camera.trackingConfidence > 0.7 ? 0.008 : 0.006;
-      if (deltaX < stableThreshold) {
-        state.camera.dwell += 0.05;
-      } else {
-        state.camera.dwell = Math.max(0, state.camera.dwell - 0.05);
-        state.camera.lastStableX = state.camera.pointerX;
-      }
-
-      state.camera.submitCooldown = Math.max(0, state.camera.submitCooldown - 0.05);
-      if (state.camera.dwell > 0.95 && state.camera.submitCooldown <= 0 && state.camera.trackingConfidence > 0.35) {
-        submitGuess("camera-dwell");
-        state.camera.dwell = 0;
-        state.camera.submitCooldown = 1.3;
-      }
-    } else {
-      state.camera.dwell = Math.max(0, state.camera.dwell - 0.05);
-      state.camera.submitCooldown = Math.max(0, state.camera.submitCooldown - 0.05);
-    }
+    applyCameraPointerControl(sampleStepSeconds);
   }
 
   function drawBackground() {
@@ -1274,7 +1416,8 @@
     ctx.font = "600 13px 'Noto Sans', 'Outfit', sans-serif";
     ctx.textAlign = "left";
     const confidenceText = Math.round(state.camera.trackingConfidence * 100);
-    ctx.fillText(`hareket ${Math.round(state.camera.lastMotion)} | takip %${confidenceText}`, x, y + h + 18);
+    const trackerLabel = state.camera.tracker === "ai" ? "AI" : "basic";
+    ctx.fillText(`hareket ${Math.round(state.camera.lastMotion)} | takip %${confidenceText} | ${trackerLabel}`, x, y + h + 18);
   }
 
   function drawCenteredWrappedText(text, centerX, startY, maxWidth, lineHeight) {
@@ -1305,10 +1448,12 @@
   }
 
   function drawMenuPanel() {
+    const isMenuMode = state.mode === "menu";
     const panelW = canvas.width * 0.78;
-    const panelH = state.mode === "menu" ? canvas.height * 0.66 : canvas.height * 0.56;
+    const menuDesiredHeight = Math.max(canvas.height * 0.72, 380);
+    const panelH = isMenuMode ? Math.min(menuDesiredHeight, canvas.height * 0.9) : canvas.height * 0.56;
     const panelX = (canvas.width - panelW) * 0.5;
-    const panelY = canvas.height * 0.2;
+    const panelY = (canvas.height - panelH) * 0.5;
 
     ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
     ctx.strokeStyle = "rgba(34, 73, 90, 0.25)";
@@ -1325,7 +1470,14 @@
     if (state.mode === "menu") {
       ctx.fillText("KESİR KÂŞİFİ", canvas.width * 0.5, panelY + 74);
       ctx.font = "600 20px 'Noto Sans', 'Outfit', sans-serif";
-      drawCenteredWrappedText("Fare, dokunmatik veya kamera ile hedef kesri sayı doğrusuna yerleştir.", canvas.width * 0.5, panelY + 116, panelW * 0.86, 28);
+      const subtitleLines = drawCenteredWrappedText(
+        "Fare, dokunmatik veya kamera ile hedef kesri sayı doğrusuna yerleştir.",
+        canvas.width * 0.5,
+        panelY + 116,
+        panelW * 0.86,
+        28
+      );
+      const subtitleBottom = panelY + 116 + (subtitleLines - 1) * 28;
 
       ctx.textAlign = "left";
       ctx.font = "600 18px 'Noto Sans', 'Outfit', sans-serif";
@@ -1337,11 +1489,20 @@
         "5) Kayan Hat Sprint",
         "6) Kamera Boss (parmak modu)",
       ];
+      const rowCount = Math.ceil(items.length / 2);
+      const footerY = panelY + panelH - 44;
+      const itemsTop = subtitleBottom + 54;
+      const availableHeight = Math.max(140, footerY - itemsTop - 32);
+      let rowGap = rowCount > 1 ? availableHeight / (rowCount - 1) : 0;
+      rowGap = clamp(rowGap, 38, 68);
+      const rowsHeight = rowGap * Math.max(0, rowCount - 1);
+      const rowBaseY = Math.max(itemsTop, footerY - 28 - rowsHeight);
+
       items.forEach((item, i) => {
         const row = Math.floor(i / 2);
         const col = i % 2;
         const x = panelX + 42 + col * (panelW * 0.5 - 24);
-        const y = panelY + 188 + row * 68;
+        const y = rowBaseY + row * rowGap;
         ctx.fillStyle = i === 5 ? "#1a3642" : "#22495a";
         ctx.fillText(item, x, y);
       });
@@ -1349,7 +1510,7 @@
       ctx.textAlign = "center";
       ctx.font = "600 17px 'Noto Sans', 'Outfit', sans-serif";
       ctx.fillStyle = "#4b5563";
-      drawCenteredWrappedText("Başlat: buton veya 1-6 | Menü: 0 | Kamera: C | Tam ekran: F", canvas.width * 0.5, panelY + panelH - 56, panelW * 0.88, 24);
+      drawCenteredWrappedText("Başlat: buton veya 1-6 | Menü: 0 | Kamera: C | Tam ekran: F", canvas.width * 0.5, footerY, panelW * 0.88, 24);
       return;
     }
 
