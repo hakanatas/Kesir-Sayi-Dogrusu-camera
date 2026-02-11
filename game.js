@@ -1265,14 +1265,26 @@
           "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm"
         );
 
-        const handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
-          baseOptions: {
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-            delegate: "GPU",
-          },
-          runningMode: "VIDEO",
-          numHands: 1,
-        });
+        // Önce GPU dene, başarısız olursa CPU'ya düş (Raspberry Pi uyumu)
+        const delegates = ["GPU", "CPU"];
+        let handLandmarker = null;
+
+        for (const delegate of delegates) {
+          try {
+            handLandmarker = await HandLandmarker.createFromOptions(filesetResolver, {
+              baseOptions: {
+                modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                delegate,
+              },
+              runningMode: "VIDEO",
+              numHands: 1,
+            });
+            break;
+          } catch (delegateErr) {
+            if (delegate === "CPU") throw delegateErr;
+            // GPU başarısız, CPU denenecek
+          }
+        }
 
         ml.hands = handLandmarker;
         ml.loaded = true;
