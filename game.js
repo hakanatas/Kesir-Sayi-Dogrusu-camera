@@ -542,6 +542,11 @@
   cameraVideo.muted = true;
   cameraVideo.playsInline = true;
 
+  // Pi MJPEG stream fallback — getUserMedia başarısız olursa kullanılır
+  const mjpegImg = new Image();
+  mjpegImg.crossOrigin = "anonymous";
+  let mjpegActive = false;
+
   const cameraSampleCanvas = document.createElement("canvas");
   cameraSampleCanvas.width = CAM_W;
   cameraSampleCanvas.height = CAM_H;
@@ -1098,6 +1103,94 @@
     }
   }
 
+  // ── Pi MJPEG stream fallback ──
+  // getUserMedia çalışmadığında (Pi AI Camera gibi) picam_server.py'den
+  // MJPEG stream alarak kamerayı simüle eder.
+  async function tryMjpegStream() {
+    // Aynı origin'de /camera/status endpoint'i var mı kontrol et
+    const base = window.location.origin;
+    try {
+      console.log("[KesirKamera] MJPEG: /camera/status kontrol ediliyor...");
+      const resp = await fetch(`${base}/camera/status`, { signal: AbortSignal.timeout(2000) });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const status = await resp.json();
+      if (!status.running) {
+        console.warn("[KesirKamera] MJPEG: Kamera sunucusu çalışıyor ama kamera aktif değil");
+        return false;
+      }
+      console.log("[KesirKamera] MJPEG: Kamera sunucusu bulundu!", status);
+    } catch {
+      console.log("[KesirKamera] MJPEG: /camera/status bulunamadı (picam_server.py çalışmıyor olabilir)");
+      return false;
+    }
+
+    // MJPEG stream'i img element'e bağla
+    return new Promise((resolve) => {
+      const streamUrl = `${base}/camera`;
+      let resolved = false;
+
+      mjpegImg.onload = () => {
+        if (resolved) return;
+        resolved = true;
+        mjpegActive = true;
+        console.log("[KesirKamera] MJPEG: Stream başarılı!");
+
+        // cameraVideo yerine mjpegImg kullanılacak — video boyutlarını ayarla
+        // mjpegImg'den canvas'a frame kopyalamak için bir interval başlat
+        state.camera.active = true;
+        state.camera.baselineReady = false;
+        state.camera.pointerX = 0.5;
+        state.camera.pointerY = 0.5;
+        state.camera.lastStableX = 0.5;
+        state.camera.dwell = 0;
+        state.camera.submitCooldown = 0;
+        state.camera.sampleAccumulator = 0;
+        state.camera.lastMotion = 0;
+        state.camera.trackingConfidence = 0;
+        state.camera.tracker = "basic";
+        state.camera.ml.lastSeen = 0;
+        state.camera.ml.lastInference = 0;
+        state.camera.errorText = "";
+        state.camera.failed = false;
+
+        void ensureMlTracker();
+        updateCameraButtonText();
+        setFeedback("☝️ Pi kamera aktif — İşaret parmağınla kontrol et!", "success", 2.4);
+        resolve(true);
+      };
+
+      mjpegImg.onerror = () => {
+        if (resolved) return;
+        resolved = true;
+        mjpegActive = false;
+        console.warn("[KesirKamera] MJPEG: Stream bağlanılamadı");
+        resolve(false);
+      };
+
+      // 5 saniye timeout
+      setTimeout(() => {
+        if (resolved) return;
+        resolved = true;
+        mjpegActive = false;
+        console.warn("[KesirKamera] MJPEG: Timeout");
+        resolve(false);
+      }, 5000);
+
+      mjpegImg.src = streamUrl;
+    });
+  }
+
+  // MJPEG stream veya getUserMedia video kaynağını döndürür
+  function getCameraSource() {
+    return mjpegActive ? mjpegImg : cameraVideo;
+  }
+
+  // Kamera kaynağı hazır mı? (video readyState >= 2 veya mjpeg yüklü)
+  function isCameraSourceReady() {
+    if (mjpegActive) return mjpegImg.complete && mjpegImg.naturalWidth > 0;
+    return cameraVideo.readyState >= 2;
+  }
+
   async function ensureCameraActive() {
     if (state.camera.active) {
       return true;
@@ -1140,12 +1233,17 @@
     }
 
     if (!stream) {
+      // getUserMedia başarısız — Pi MJPEG stream fallback dene
+      console.warn("[KesirKamera] getUserMedia başarısız, MJPEG stream deneniyor...");
+      const mjpegOk = await tryMjpegStream();
+      if (mjpegOk) return true;
+
       const reason = lastError ? `${lastError.name}: ${lastError.message}` : "Bilinmeyen hata";
       state.camera.failed = true;
       state.camera.errorState = true;
       await diagnoseCameraError(reason);
-      setFeedback("Kamera açılamadı. Lütfen izinleri kontrol et.", "warning", 4);
-      console.error("[KesirKamera] Tüm constraint'ler başarısız:", reason);
+      setFeedback("Kamera açılamadı. Pi için: python3 picam_server.py çalıştırın.", "warning", 6);
+      console.error("[KesirKamera] Tüm yöntemler başarısız:", reason);
       return false;
     }
 
@@ -1221,13 +1319,19 @@
 
 
   function stopCamera() {
-    if (!state.camera.stream) {
+    if (mjpegActive) {
+      mjpegImg.src = "";
+      mjpegActive = false;
+    }
+    if (!state.camera.stream && !mjpegActive) {
       state.camera.active = false;
       return;
     }
 
-    state.camera.stream.getTracks().forEach((track) => track.stop());
-    state.camera.stream = null;
+    if (state.camera.stream) {
+      state.camera.stream.getTracks().forEach((track) => track.stop());
+      state.camera.stream = null;
+    }
     state.camera.active = false;
     state.camera.baselineReady = false;
     state.camera.lastMotion = 0;
@@ -1411,7 +1515,7 @@
   function processBasicCamera(sampleStepSeconds) {
     state.camera.tracker = "basic";
 
-    cameraSampleCtx.drawImage(cameraVideo, 0, 0, CAM_W, CAM_H);
+    cameraSampleCtx.drawImage(getCameraSource(), 0, 0, CAM_W, CAM_H);
     const pixels = cameraSampleCtx.getImageData(0, 0, CAM_W, CAM_H).data;
 
     if (!state.camera.baselineReady) {
@@ -1521,7 +1625,7 @@
   }
 
   function processCamera(dt) {
-    if (!state.camera.active || !cameraSampleCtx || cameraVideo.readyState < 2) {
+    if (!state.camera.active || !cameraSampleCtx || !isCameraSourceReady()) {
       return;
     }
 
@@ -1538,7 +1642,7 @@
       if (performance.now() - ml.lastInference >= 34) {
         ml.lastInference = performance.now();
         try {
-          const results = ml.hands.detectForVideo(cameraVideo, performance.now());
+          const results = ml.hands.detectForVideo(getCameraSource(), performance.now());
           if (results && results.landmarks && results.landmarks.length > 0) {
             processHandLandmarks(results.landmarks[0]);
           } else {
@@ -2130,7 +2234,7 @@
   }
 
   function drawCameraPreview() {
-    if (!state.camera.active || cameraVideo.readyState < 2) {
+    if (!state.camera.active || !isCameraSourceReady()) {
       return;
     }
 
@@ -2181,7 +2285,7 @@
       state.camera.retryRect = null;
     }
 
-    if (!state.camera.active || cameraVideo.readyState < 2) {
+    if (!state.camera.active || !isCameraSourceReady()) {
       return;
     }
     ctx.beginPath();
@@ -2194,7 +2298,7 @@
     ctx.clip();
     ctx.translate(x + w, y);
     ctx.scale(-1, 1);
-    ctx.drawImage(cameraVideo, 0, 0, w, h);
+    ctx.drawImage(getCameraSource(), 0, 0, w, h);
     ctx.restore();
 
     const px = x + (1 - state.camera.pointerX) * w;
