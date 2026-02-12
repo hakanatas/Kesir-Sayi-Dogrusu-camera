@@ -1191,11 +1191,20 @@
     return cameraVideo.readyState >= 2;
   }
 
+  let _cameraActivating = null;
   async function ensureCameraActive() {
-    if (state.camera.active) {
+    if (state.camera.active || mjpegActive) {
       return true;
     }
+    // Eşzamanlı çağrıları önle — zaten deniyorsak sonucu bekle
+    if (_cameraActivating) return _cameraActivating;
+    _cameraActivating = _doEnsureCameraActive();
+    const result = await _cameraActivating;
+    _cameraActivating = null;
+    return result;
+  }
 
+  async function _doEnsureCameraActive() {
     state.camera.errorState = false;
     state.camera.failed = false;
 
