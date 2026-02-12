@@ -83,7 +83,7 @@ chromium \
     --check-for-update-interval=31536000 \
     --autoplay-policy=no-user-gesture-required \
     --start-fullscreen \
-    --incognito \
+    --disable-restore-session-state \
     "$URL" >> "$KIOSK_LOG" 2>&1
 
 # Chromium kapanınca picam_server'ı da durdur
